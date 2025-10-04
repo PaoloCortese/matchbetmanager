@@ -1,0 +1,1887 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MatchBetManager</title>
+    <script>
+        const appId = 'matchbetmanager-app';
+        const firebaseConfig = {
+            apiKey: "AIzaSyDUsyrchzzEfR0tomW9zYY9pic-fgYjSRA",
+            authDomain: "matchbetmanager.firebaseapp.com",
+            projectId: "matchbetmanager",
+            storageBucket: "matchbetmanager.firebasestorage.app",
+            messagingSenderId: "145857933911",
+            appId: "1:145857933911:web:3ec00e29aa5bc566df2912",
+            measurementId: "G-1WVF567GJC"
+        };
+        const initialAuthToken = null;
+    </script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        setLogLevel('debug');
+
+        let firebaseApp, db, auth, userId = null;
+        let isAuthReady = false;
+        let isFirestoreReady = false;
+        let lastSaveTimestamp = null;
+        let lastLoadTimestamp = null;
+        let connectionError = null;
+
+        function updateConnectionStatus(status, message) {
+            // Usa setTimeout per assicurarsi che il DOM sia pronto
+            setTimeout(() => {
+                const element = document.getElementById('connectionStatus');
+                if (!element) {
+                    console.log('Status badge non ancora disponibile:', status, message);
+                    return;
+                }
+                
+                element.className = `status-badge status-${status}`;
+                
+                let displayMessage = message;
+                
+                if (status === 'connected' && lastLoadTimestamp) {
+                    displayMessage = `✓ Connesso - Ultimo caricamento: ${lastLoadTimestamp}`;
+                } else if (status === 'saved' && lastSaveTimestamp) {
+                    displayMessage = `✓ Salvato: ${lastSaveTimestamp}`;
+                } else if (status === 'error' && connectionError) {
+                    displayMessage = `⚠ Errore: ${connectionError}`;
+                }
+                
+                element.textContent = displayMessage;
+                console.log('Status aggiornato:', status, displayMessage);
+            }, 100);
+        }
+
+        if (Object.keys(firebaseConfig).length > 0) {
+            firebaseApp = initializeApp(firebaseConfig);
+            db = getFirestore(firebaseApp);
+            auth = getAuth(firebaseApp);
+            
+            async function initializeAuthAndData() {
+                try {
+                    updateConnectionStatus("connecting", "Connessione in corso...");
+
+                    if (initialAuthToken) {
+                        await signInWithCustomToken(auth, initialAuthToken);
+                    } else {
+                        await signInAnonymously(auth);
+                    }
+                    
+                    onAuthStateChanged(auth, (user) => {
+                        if (user) {
+                            userId = user.uid;
+                            isAuthReady = true;
+                            connectionError = null;
+                            startDataListener();
+                            updateConnectionStatus("connected", "Connesso");
+                        } else {
+                            userId = crypto.randomUUID();
+                            isAuthReady = true;
+                            isFirestoreReady = true;
+                            connectionError = "Non autenticato";
+                            updateConnectionStatus("error", "Offline - Non autenticato");
+                            if (window.renderApp) window.renderApp();
+                        }
+                    });
+                } catch (error) {
+                    console.error("Errore durante l'autenticazione:", error);
+                    userId = crypto.randomUUID();
+                    isAuthReady = true;
+                    isFirestoreReady = true;
+                    connectionError = error.message;
+                    updateConnectionStatus("error", "Errore di connessione");
+                    if (window.renderApp) window.renderApp();
+                }
+            }
+
+            function getFirestoreDocRef() {
+                if (!db || !userId) return null;
+                return doc(db, `users/${userId}/matchbet/data`);
+            }
+
+            window.saveAppData = async function() {
+                if (!isAuthReady || !isFirestoreReady) {
+                    console.warn("Sistema non pronto per il salvataggio");
+                    return;
+                }
+
+                const docRef = getFirestoreDocRef();
+                if (!docRef) {
+                    console.error("Riferimento documento non disponibile");
+                    return;
+                }
+
+                updateConnectionStatus("saving", "Salvataggio in corso...");
+
+                const dataToSave = {
+                    partite: window.appData.partite,
+                    giocate: window.appData.giocate,
+                    storico: window.appData.storico,
+                    movimentiCapitale: window.appData.movimentiCapitale,
+                    riepilogo: window.appData.riepilogo,
+                    timestamp: new Date().toISOString()
+                };
+
+                try {
+                    await setDoc(docRef, dataToSave);
+                    lastSaveTimestamp = new Date().toLocaleTimeString('it-IT');
+                    connectionError = null;
+                    updateConnectionStatus("saved", `Salvato: ${lastSaveTimestamp}`);
+                    
+                    setTimeout(() => {
+                        if (lastLoadTimestamp) {
+                            updateConnectionStatus("connected", "Connesso");
+                        }
+                    }, 3000);
+                } catch (e) {
+                    console.error("Errore durante il salvataggio:", e);
+                    connectionError = e.message;
+                    updateConnectionStatus("error", "Errore nel salvataggio");
+                }
+            };
+
+            function startDataListener() {
+                const docRef = getFirestoreDocRef();
+                if (!docRef) return;
+
+                onSnapshot(docRef, (docSnap) => {
+                    if (docSnap.exists()) {
+                        const data = docSnap.data();
+                        
+                        window.appData.partite = data.partite || [];
+                        window.appData.giocate = data.giocate || [];
+                        window.appData.storico = data.storico || [];
+                        window.appData.movimentiCapitale = data.movimentiCapitale || [];
+                        window.appData.riepilogo = data.riepilogo || window.appData.riepilogo;
+                        
+                        isFirestoreReady = true;
+                        lastLoadTimestamp = new Date().toLocaleTimeString('it-IT');
+                        connectionError = null;
+                        
+                        if (window.renderApp) window.renderApp();
+                        updateConnectionStatus("connected", "Connesso");
+                        
+                    } else {
+                        console.log("Documento non trovato, salvataggio dati iniziali");
+                        isFirestoreReady = true;
+                        if (window.saveAppData) window.saveAppData();
+                    }
+                }, (error) => {
+                    console.error("Errore nell'ascolto Firestore:", error);
+                    isFirestoreReady = true;
+                    connectionError = error.message;
+                    updateConnectionStatus("error", "Errore di sincronizzazione");
+                });
+            }
+
+            // Inizializza solo dopo che il DOM è caricato
+            if (document.readyState === 'loading') {
+                document.addEventListener('DOMContentLoaded', initializeAuthAndData);
+            } else {
+                initializeAuthAndData();
+            }
+
+        } else {
+            console.warn("Configurazione Firebase non disponibile - modalità offline");
+            userId = crypto.randomUUID();
+            isAuthReady = true;
+            isFirestoreReady = true;
+            
+            // Salvataggio locale nel localStorage
+            window.saveAppData = function() {
+                try {
+                    localStorage.setItem('matchbet_data', JSON.stringify(window.appData));
+                    lastSaveTimestamp = new Date().toLocaleTimeString('it-IT');
+                    updateConnectionStatus("saved", `Salvato locale: ${lastSaveTimestamp}`);
+                    setTimeout(() => {
+                        updateConnectionStatus("offline", "Modalità Offline");
+                    }, 2000);
+                } catch (e) {
+                    console.error("Errore salvataggio locale:", e);
+                }
+            };
+            
+            // Carica dati salvati localmente
+            document.addEventListener('DOMContentLoaded', () => {
+                try {
+                    const saved = localStorage.getItem('matchbet_data');
+                    if (saved) {
+                        const data = JSON.parse(saved);
+                        window.appData.partite = data.partite || [];
+                        window.appData.giocate = data.giocate || [];
+                        window.appData.storico = data.storico || [];
+                        window.appData.movimentiCapitale = data.movimentiCapitale || [];
+                        window.appData.riepilogo = data.riepilogo || window.appData.riepilogo;
+                        lastLoadTimestamp = new Date().toLocaleTimeString('it-IT');
+                    }
+                } catch (e) {
+                    console.error("Errore caricamento dati locali:", e);
+                }
+                updateConnectionStatus("offline", "Modalità Offline (Dati Locali)");
+                if (window.renderApp) window.renderApp();
+            });
+        }
+    </script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background: #f5f5f7;
+            color: #1d1d1f;
+            line-height: 1.6;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        header {
+            background: linear-gradient(135deg, #a1a1a6 0%, #86868b 100%);
+            padding: 25px;
+            text-align: center;
+            margin-bottom: 30px;
+            border-radius: 16px;
+            box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+            position: relative;
+        }
+
+        h1 {
+            font-size: 32px;
+            font-weight: 600;
+            color: #ffffff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+        }
+        
+        .app-icon {
+            font-size: 38px; 
+            margin-top: -5px; 
+        }
+
+        .status-badge {
+            position: absolute;
+            top: 15px;
+            right: 25px;
+            font-size: 11px;
+            padding: 6px 12px;
+            border-radius: 8px;
+            font-weight: 500;
+            max-width: 300px;
+            text-align: right;
+        }
+        .status-badge.status-connected {
+            background: #d4f8d4;
+            color: #34c759;
+        }
+        .status-badge.status-saved {
+            background: #d4f8d4;
+            color: #34c759;
+        }
+        .status-badge.status-connecting {
+            background: #ffe6b8;
+            color: #ff9500;
+        }
+        .status-badge.status-saving {
+            background: #ffe6b8;
+            color: #ff9500;
+        }
+        .status-badge.status-error {
+            background: #ffdbdb;
+            color: #ff3b30;
+        }
+        .status-badge.status-offline {
+            background: #e5e5e7;
+            color: #636366;
+        }
+
+        .tabs {
+            display: flex;
+            background: #ffffff;
+            border-radius: 12px;
+            padding: 8px;
+            margin-bottom: 30px;
+            overflow-x: auto;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        }
+
+        .tab {
+            flex: 1;
+            padding: 12px 20px;
+            text-align: center;
+            cursor: pointer;
+            border-radius: 8px;
+            font-weight: 600;
+            color: #636366;
+            transition: all 0.3s;
+            white-space: nowrap;
+            min-width: 100px;
+        }
+
+        .tab:hover {
+            background: #f0f0f5;
+            color: #1d1d1f;
+        }
+
+        .tab.active {
+            background: #4a4a4c;
+            color: #ffffff;
+        }
+
+        .tab-content {
+            display: none;
+            background: #ffffff;
+            border-radius: 16px;
+            padding: 30px;
+            box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+        }
+
+        .tab-content.active {
+            display: block;
+        }
+
+        textarea {
+            width: 100%;
+            min-height: 200px;
+            padding: 15px;
+            border: 2px solid #e5e5e7;
+            border-radius: 12px;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            resize: vertical;
+            background: #fafafa;
+        }
+
+        textarea:focus {
+            outline: none;
+            border-color: #86868b;
+            background: #ffffff;
+        }
+
+        button {
+            background: #4a4a4c;
+            color: #ffffff;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 10px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+            margin-top: 15px;
+        }
+
+        button:hover {
+            background: #636366;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        button.secondary {
+            background: #86868b;
+        }
+
+        button.secondary:hover {
+            background: #636366;
+        }
+
+        button.danger {
+            background: transparent;
+            color: #ff3b30;
+            padding: 8px;
+            font-size: 20px;
+            margin: 0;
+        }
+
+        button.danger:hover {
+            background: #ffe5e5;
+            transform: scale(1.1);
+        }
+
+        button.success {
+            background: #34c759;
+        }
+
+        button.success:hover {
+            background: #30d158;
+        }
+
+        button.warning {
+            background: #ff9500;
+        }
+
+        button.warning:hover {
+            background: #ff9f0a;
+        }
+
+        .message {
+            padding: 15px;
+            border-radius: 12px;
+            margin-bottom: 20px;
+            font-weight: 500;
+        }
+
+        .message.error {
+            background: #ffe5e5;
+            color: #ff3b30;
+            border: 2px solid #ff3b30;
+        }
+
+        .message.success {
+            background: #e5ffe5;
+            color: #34c759;
+            border: 2px solid #34c759;
+        }
+        
+        .message.warning {
+            background: #fff3cd;
+            color: #ff9500;
+            border: 2px solid #ff9500;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin-top: 20px;
+            background: #fafafa;
+            border-radius: 12px;
+            overflow: hidden;
+        }
+
+        th, td {
+            padding: 14px;
+            text-align: left;
+            border-bottom: 1px solid #e5e5e7;
+        }
+
+        th {
+            background: #e5e5e7;
+            font-weight: 600;
+            color: #3a3a3c;
+            text-transform: uppercase;
+            font-size: 12px;
+            letter-spacing: 0.5px;
+        }
+
+        tr {
+            vertical-align: middle;
+        }
+
+        tr:hover {
+            background: #f5f5f7;
+        }
+
+        tr:last-child td {
+            border-bottom: none;
+        }
+
+        .actions {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+
+        .actions button {
+            margin: 0;
+            padding: 8px 16px;
+            font-size: 14px;
+        }
+
+        .capitale-section, .bilancio-riepilogo {
+            background: linear-gradient(135deg, #a1a1a6 0%, #86868b 100%);
+            padding: 25px;
+            border-radius: 14px;
+            margin-bottom: 25px;
+            color: #ffffff;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+        }
+
+        .capitale-section h3, .bilancio-riepilogo h3 {
+            color: #ffffff;
+            margin-bottom: 15px;
+        }
+
+        .movimento-bet-win {
+            background: #e5ffe5;
+            color: #34c759;
+        }
+        .movimento-bet-lose {
+            background: #ffe5e5;
+            color: #ff3b30;
+        }
+        
+        .stat-card {
+            background: linear-gradient(135deg, #fafafa 0%, #f5f5f7 100%);
+            padding: 20px;
+            border-radius: 14px;
+            margin-bottom: 0;
+            border: 1px solid #e5e5e7;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+            min-height: 100px;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr); 
+            gap: 15px;
+            margin-top: 30px;
+        }
+        
+        .filter-bar {
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            margin-bottom: 20px;
+            align-items: flex-start;
+        }
+        
+        .filter-buttons {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        
+        .date-filters-row {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            margin-top: 5px;
+        }
+
+        .date-filters-row label {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 0;
+            font-weight: 400; 
+            padding-top: 0;
+            padding-bottom: 0;
+            flex: 1; 
+            min-width: 150px; 
+        }
+        
+        input[type="text"],
+        input[type="number"],
+        input[type="date"],
+        input[type="time"],
+        select {
+            padding: 10px 12px;
+            border-radius: 8px;
+            font-size: 15px;
+            max-width: 100%;
+            border: 1px solid #d1d1d6;
+        }
+
+        .capitale-controls .form-group {
+            display: flex;
+            flex-direction: column;
+            flex-grow: 1;
+        }
+        
+        .capitale-controls {
+            display: flex; 
+            gap: 20px;
+            align-items: flex-end;
+        }
+
+        .capitale-controls .form-group:first-child,
+        .capitale-controls .capitale-input-group {
+            flex-basis: 50%;
+        }
+
+        .filter-bar input[type="date"] {
+            width: 130px; 
+        }
+
+        #giocateForm input[type="number"],
+        #giocateForm select {
+            padding: 6px 8px;
+            height: 34px;
+        }
+        
+        #giocateForm select {
+            width: 120px;
+        }
+        #giocateForm input[type="number"] {
+             width: 80px;
+        }
+
+        .editable-cell input {
+            padding: 4px 6px;
+            border: 1px solid #d1d1d6;
+            border-radius: 4px;
+            width: 100%;
+            box-sizing: border-box;
+            background: #ffffff;
+            font-size: 14px;
+        }
+        
+        .semaforo-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            display: inline-block;
+            margin: 0 auto;
+        }
+
+        .semaforo-green {
+            background-color: #34c759;
+        }
+
+        .semaforo-orange {
+            background-color: #ff9500;
+        }
+
+        .semaforo-red {
+            background-color: #ff3b30;
+        }
+
+        .manual-input-fields {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
+            margin-top: 15px;
+        }
+        
+        .manual-input-fields .form-group {
+            margin-bottom: 0;
+        }
+        
+        .manual-input-fields input,
+        .manual-input-fields select {
+            width: 100%;
+        }
+        
+        .prob-semaforo-group {
+             display: flex;
+             align-items: center;
+             gap: 8px;
+        }
+        .prob-semaforo-group input {
+            width: 70px;
+        }
+        .prob-semaforo-group .semaforo-dot {
+            flex-shrink: 0;
+            margin-left: auto;
+        }
+
+        .modal-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .modal-overlay.active {
+            display: flex;
+        }
+
+        .modal-content {
+            background: #ffffff;
+            border-radius: 16px;
+            padding: 30px;
+            max-width: 500px;
+            width: 90%;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
+        }
+
+        .modal-content h3 {
+            color: #1d1d1f;
+            margin-bottom: 15px;
+            font-size: 20px;
+        }
+
+        .modal-content p {
+            color: #636366;
+            margin-bottom: 25px;
+            line-height: 1.5;
+        }
+
+        .modal-buttons {
+            display: flex;
+            gap: 10px;
+            justify-content: flex-end;
+        }
+
+        .modal-buttons button {
+            margin: 0;
+        }
+
+        @media (max-width: 768px) {
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+            .capitale-controls {
+                flex-direction: column;
+                align-items: stretch;
+            }
+            .status-badge {
+                position: static;
+                margin-top: 10px;
+                max-width: 100%;
+                text-align: center;
+            }
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1><span class="app-icon">⚽</span> MatchBetManager</h1>
+        <span id="connectionStatus" class="status-badge status-connecting">Caricamento...</span>
+    </header>
+
+    <div class="container">
+        <div id="globalMessage"></div>
+
+        <div class="tabs">
+            <div class="tab active" data-tab="import">IMPORT</div>
+            <div class="tab" data-tab="partite">PARTITE</div>
+            <div class="tab" data-tab="giocate" id="giocateTab">GIOCATE</div>
+            <div class="tab" data-tab="bilancio">BILANCIO</div>
+            <div class="tab" data-tab="capitale">CAPITALE</div>
+        </div>
+
+        <div id="import" class="tab-content active">
+            <h2>Importa Dati Partite</h2>
+            <div id="importMessage"></div>
+            
+            <div class="file-upload" style="margin-bottom: 30px;">
+                <label for="fileInput">Carica file CSV:</label>
+                <input type="file" id="fileInput" accept=".csv">
+                <button id="importCsvBtn" style="margin-top: 10px;">Importa Dati CSV</button>
+            </div>
+            
+            <h3 style="margin-top: 30px; margin-bottom: 10px;">Importazione Manuale/JSON</h3>
+
+            <div style="display: flex; gap: 20px; align-items: center; margin-bottom: 15px;">
+                <label for="formatSelect" style="flex-shrink: 0; margin-bottom: 0;">Formato Dati:</label>
+                <select id="formatSelect" style="flex-grow: 1;">
+                    <option value="single">Partita Singola (JSON)</option>
+                    <option value="multiple">Partite Multiple (Array JSON)</option>
+                </select>
+                <button id="importJsonBtn" style="margin: 0;">Importa Dati JSON</button>
+            </div>
+
+            <label for="jsonInput">Incolla il JSON/CSV qui:</label>
+            <textarea id="jsonInput"></textarea>
+            
+            <div style="margin-top: 20px; padding: 15px; border: 1px solid #d1d1d6; border-radius: 8px;">
+                <h4 style="font-size: 14px; color: #636366; margin-bottom: 8px;">Esempio Formato (Copiabile per AI):</h4>
+                <button id="copyExampleBtn" style="margin: 0; padding: 6px 12px; font-size: 13px;">Copia Codice + Prompt</button>
+                <pre id="formatExample" style="font-size: 12px; background: #fafafa; padding: 10px; border-radius: 6px; overflow-x: auto;"></pre>
+                <p style="font-size: 12px; color: #86868b; margin-top: 5px;">* Utilizza questo formato per richiedere all'AI la generazione di dati compatibili con l'applicazione.</p>
+            </div>
+            
+            <h3 style="margin-top: 40px; margin-bottom: 15px;">Aggiungi Partita Manualmente</h3>
+            <div id="manualInputForm" style="padding: 20px; border: 1px solid #e5e5e7; border-radius: 12px; background: #fcfcfc;">
+                
+                <div class="manual-input-fields">
+                    <div class="form-group"><label>Campionato</label><input type="text" id="manual_campionato" value="Serie A" data-manual-field="campionato"></div>
+                    <div class="form-group"><label>Nome Partita</label><input type="text" id="manual_nome_partita" placeholder="Squadra 1 vs Squadra 2" data-manual-field="nome_partita"></div>
+                    <div class="form-group"><label>Data</label><input type="date" id="manual_data" data-manual-field="data" value=""></div>
+                    <div class="form-group"><label>Orario</label><input type="time" id="manual_orario" value="20:45" data-manual-field="orario"></div>
+                    
+                    <div class="form-group">
+                        <label>Mercato</label>
+                        <select id="manual_mercato" data-manual-field="mercato">
+                            <option value="Over 1.5">Over 1.5</option>
+                            <option value="Over 2.5">Over 2.5</option>
+                            <option value="Over 3.5">Over 3.5</option>
+                            <option value="Under 2.5">Under 2.5</option>
+                            <option value="BTTS (Goal)">Segnano Entrambe (Goal)</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <label>Probabilità (%)</label>
+                        <div class="prob-semaforo-group">
+                             <input type="number" id="manual_probabilita" value="80" step="1" min="0" max="100" data-manual-field="probabilita" style="width: 70px;">
+                             <span class="semaforo-dot semaforo-green" id="semaforoDot"></span>
+                        </div>
+                    </div>
+                    
+                    <div class="form-group"><label>Entry (Back)</label><input type="number" id="manual_entry" step="0.01" data-manual-field="entry"></div>
+                    <div class="form-group"><label>Exit (Lay)</label><input type="number" id="manual_exit" step="0.01" data-manual-field="exit"></div>
+
+                    <div class="form-group"><label>Stop Loss (Lay)</label><input type="number" id="manual_stop_loss" step="0.01" data-manual-field="stop_loss"></div>
+                    <div class="form-group"><label>Stop Time</label><input type="text" id="manual_stop_time" value="35'" data-manual-field="stop_time"></div>
+                    <div class="form-group"></div>
+                    <div class="form-group"></div>
+                </div>
+
+                <div style="text-align: right; margin-top: 15px;">
+                    <button id="createPartitaBtn" class="success" style="margin: 0;">CREA PARTITA (e aggiungi a Partite)</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="partite" class="tab-content">
+            <h2>Elenco Partite</h2>
+            <div id="partiteMessage"></div>
+            <div id="partiteTable"></div>
+        </div>
+
+        <div id="giocate" class="tab-content">
+            <h2>Gestione Giocate</h2>
+            <div id="giocateMessage"></div>
+            <div id="giocateForm"></div>
+        </div>
+
+        <div id="bilancio" class="tab-content">
+            <h2>Riepilogo Bilancio</h2>
+            
+            <div class="filter-bar">
+                <div class="filter-buttons">
+                    <button class="filtro-btn" data-filter="oggi">Oggi</button>
+                    <button class="filtro-btn" data-filter="settimana">Questa Settimana</button>
+                    <button class="filtro-btn" data-filter="tutto">Tutto</button>
+                </div>
+                
+                <div class="date-filters-row">
+                    <label>
+                        Dal: <input type="date" id="dataInizio" class="filtro-data">
+                    </label>
+                    <label>
+                        Al: <input type="date" id="dataFine" class="filtro-data">
+                    </label>
+                </div>
+            </div>
+
+            <div id="bilancioContent"></div>
+        </div>
+
+        <div id="capitale" class="tab-content">
+            <h2>Gestione Capitale</h2>
+            
+            <div class="capitale-section bilancio-riepilogo">
+                <h3>💰 Gestione Capitale</h3>
+                <div class="capitale-controls">
+                    <div class="form-group">
+                        <label style="color: #ffffff;">Cassa Iniziale (€)</label>
+                        <input type="number" id="saldoIniziale" value="500" step="0.01">
+                    </div>
+                    <div class="capitale-input-group">
+                        <div class="form-group">
+                            <label style="color: #ffffff;">Importo Movimento (€)</label>
+                            <input type="number" id="importoCapitale" placeholder="0.00" step="0.01">
+                        </div>
+                    </div>
+                </div>
+                <div style="display: flex; gap: 10px; margin-top: 15px;">
+                    <button class="success" id="incrementaBtn">+ RICARICA CAPITALE</button>
+                    <button class="warning" id="svincolaBtn">− PRELIEVO CAPITALE</button>
+                </div>
+            </div>
+
+            <div id="capitaleContent"></div>
+        </div>
+    </div>
+
+    <div id="confirmModal" class="modal-overlay">
+        <div class="modal-content">
+            <h3>🗑️ Conferma Eliminazione</h3>
+            <p id="modalMessage">Vuoi eliminare questa partita?</p>
+            <div class="modal-buttons">
+                <button id="modalCancel" class="secondary">Annulla</button>
+                <button id="modalConfirm" class="danger" style="background: #ff3b30; color: white; padding: 12px 24px;">Elimina</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function formatDate(dateString) {
+            if (!dateString) return 'N/A';
+            try {
+                const date = new Date(dateString);
+                if (isNaN(date)) {
+                    const parts = dateString.split('-');
+                    if (parts.length === 3) {
+                        return `${parts[2]}.${parts[1]}.${parts[0]}`;
+                    }
+                    return dateString;
+                }
+                const day = String(date.getDate()).padStart(2, '0');
+                const month = String(date.getMonth() + 1).padStart(2, '0');
+                const year = date.getFullYear();
+                return `${day}.${month}.${year}`;
+            } catch (e) {
+                return dateString;
+            }
+        }
+        
+        function formatDateTime(dateString, timeString) {
+            const datePart = formatDate(dateString);
+            const timePart = timeString || '00:00';
+            return `${datePart} ${timePart}`;
+        }
+
+        function getSemaforoClass(probabilita) {
+            const prob = parseFloat(probabilita);
+            if (isNaN(prob)) return '';
+            if (prob >= 75) return 'semaforo-green';
+            if (prob >= 50) return 'semaforo-orange';
+            return 'semaforo-red';
+        }
+
+        window.appData = {
+            partite: [],
+            storico: [],
+            giocate: [],
+            movimentiCapitale: [],
+            riepilogo: {
+                cassa_iniziale: 500,
+                totale_scommesse: 0,
+                totale_vinto: 0,
+                totale_perso: 0,
+                saldo: 500,
+                periodo: {
+                    inicio: null,
+                    fine: null
+                }
+            }
+        };
+
+        let filtroCorrente = 'tutto';
+        let visiblePartite = 20;
+        
+        const DEFAULT_PARTITA = {
+            id_partita: crypto.randomUUID(),
+            campionato: 'Serie A',
+            nome_partita: 'Squadra 1 vs Squadra 2',
+            data: new Date().toISOString().split('T')[0],
+            orario: '20:45',
+            mercato: 'Over 1.5',
+            probabilita: 80,
+            semaforo: '🟢',
+            entry: 1.60,
+            exit: 1.22,
+            stop_loss: 2.30,
+            stake: 30,
+            stop_time: '35\'',
+            stato: 'in_corso'
+        };
+        
+        function validatePartita(data, isCSV = false) {
+            const errors = [];
+            const partita = {};
+            
+            const dataToValidate = {
+                id_partita: data.id_partita || '',
+                nome_partita: data.nome_partita || '',
+                data: data.data || '',
+                orario: data.orario || '',
+                entry: data.entry,
+                exit: data.exit,
+                stop_loss: data.stop_loss,
+                stake: data.stake,
+                stop_time: data.stop_time,
+                campionato: data.campionato,
+                mercato: data.mercato,
+                probabilita: data.probabilita,
+                semaforo: data.semaforo
+            };
+
+            const requiredFields = ['nome_partita', 'data', 'orario', 'entry', 'exit', 'stop_loss'];
+            
+            requiredFields.forEach(key => {
+                const value = dataToValidate[key];
+
+                if (key === 'entry' || key === 'exit' || key === 'stop_loss' || key === 'probabilita' || key === 'stake') {
+                     partita[key] = parseFloat(value);
+                     if (isNaN(partita[key]) || String(value).trim() === '') {
+                        errors.push({ field: key, error: `Atteso numero (float) ma ricevuto: ${value}` });
+                    }
+                } else if (key === 'data') {
+                    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+                        errors.push({ field: key, error: `Formato data non valido (atteso: YYYY-MM-DD)` });
+                    }
+                    partita[key] = value;
+                } else {
+                    partita[key] = String(value || '').trim();
+                    if (partita[key] === '') {
+                        errors.push({ field: key, error: `Campo obbligatorio mancante` });
+                    }
+                }
+            });
+
+            partita.campionato = dataToValidate.campionato || DEFAULT_PARTITA.campionato;
+            partita.mercato = dataToValidate.mercato || DEFAULT_PARTITA.mercato;
+            partita.probabilita = partita.probabilita || dataToValidate.probabilita || DEFAULT_PARTITA.probabilita;
+            
+            if (dataToValidate.semaforo && dataToValidate.semaforo.length <= 2) {
+                 partita.semaforo = dataToValidate.semaforo;
+            } else {
+                const semaforoClass = getSemaforoClass(partita.probabilita);
+                if (semaforoClass === 'semaforo-green') partita.semaforo = '🟢';
+                else if (semaforoClass === 'semaforo-orange') partita.semaforo = '🟠';
+                else partita.semaforo = '🔴';
+            }
+            
+            partita.stake = partita.stake || dataToValidate.stake || DEFAULT_PARTITA.stake;
+            partita.stop_time = dataToValidate.stop_time || DEFAULT_PARTITA.stop_time;
+            partita.id_partita = dataToValidate.id_partita || crypto.randomUUID(); 
+            partita.stato = 'in_corso';
+
+            if (errors.length > 0) {
+                return { valid: false, errors, partita: null };
+            }
+            return { valid: true, errors: [], partita };
+        }
+        
+        function processImportData(rawData, isCSV = false) {
+            const result = { success: true, message: '', errors: [], importedCount: 0, ignoredCount: 0, newPartite: [] };
+            let dataArray = [];
+            
+            try {
+                if (isCSV) {
+                    dataArray = parseCSV(rawData);
+                } else {
+                    dataArray = JSON.parse(rawData);
+                    if (!Array.isArray(dataArray)) {
+                        dataArray = [dataArray];
+                    }
+                }
+            } catch (e) {
+                 result.success = false;
+                 result.message = `Errore di parsing ${isCSV ? 'CSV' : 'JSON'}: ${e.message}`;
+                 return result;
+            }
+
+            const existingIds = new Set(appData.partite.map(p => p.id_partita));
+            
+            dataArray.forEach((rowData, index) => {
+                const validationResult = validatePartita(rowData, isCSV);
+                const row = index + (isCSV ? 2 : 1);
+
+                if (!validationResult.valid) {
+                    validationResult.errors.forEach(err => {
+                        result.errors.push({ row, field: err.field, error: err.error });
+                    });
+                    result.success = false;
+                    result.ignoredCount++;
+                    return;
+                }
+                
+                const newPartita = validationResult.partita;
+                
+                if (existingIds.has(newPartita.id_partita)) {
+                    result.errors.push({ row, field: 'id_partita', error: `Partita con ID ${newPartita.id_partita} già esistente.` });
+                    result.ignoredCount++;
+                    return;
+                }
+
+                result.newPartite.push(newPartita);
+                result.importedCount++;
+                existingIds.add(newPartita.id_partita);
+            });
+            
+            if (result.importedCount > 0) {
+                appData.partite.push(...result.newPartite);
+                sortPartite();
+                result.message = `${result.importedCount} partite importate correttamente.`;
+                if (result.ignoredCount > 0) {
+                    result.message += ` ${result.ignoredCount} partite ignorate (duplicati o errori).`;
+                }
+            } else if (result.errors.length > 0) {
+                result.message = `Nessuna partita importata a causa di errori. ${result.ignoredCount} partite ignorate.`;
+                result.success = false;
+            } else {
+                 result.message = `Nessun dato valido trovato per l'importazione.`;
+                 result.success = true;
+            }
+            
+            return result;
+        }
+        
+        function parseCSV(csvString) {
+            const lines = csvString.trim().split('\n');
+            if (lines.length < 2) return [];
+
+            const headers = lines[0].split(',').map(h => h.trim().replace(/"/g, ''));
+            const data = [];
+
+            for (let i = 1; i < lines.length; i++) {
+                const values = lines[i].split(',').map(v => v.trim().replace(/"/g, ''));
+                if (values.length === headers.length) {
+                    const row = {};
+                    headers.forEach((header, index) => {
+                        row[header] = values[index];
+                    });
+                    data.push(row);
+                }
+            }
+            return data;
+        }
+        
+        function handleImportOutput(output) {
+            const type = output.success ? 'success' : 'error';
+            let fullMessage = output.message;
+            
+            if (output.errors.length > 0) {
+                fullMessage += ' Dettagli errori in console.';
+                console.error("Dettagli Errori Importazione:", output.errors);
+            }
+            
+            showMessage('importMessage', fullMessage, type);
+            
+            if (output.importedCount > 0) {
+                 window.saveAppData ? window.saveAppData() : window.renderApp();
+                 switchTab('partite');
+            }
+            
+            return output;
+        }
+
+        window.renderApp = function(activeTab = null) {
+            const currentActiveTab = activeTab || document.querySelector('.tab.active')?.getAttribute('data-tab') || 'import';
+            switchTab(currentActiveTab, false);
+            document.getElementById('saldoIniziale').value = appData.riepilogo.cassa_iniziale;
+            renderPartiteTable();
+            renderGiocateForm();
+            renderBilancio();
+            renderCapitale();
+            updateManualSemaforo();
+        }
+
+        function switchTab(tabName, shouldRender = true) {
+            document.querySelectorAll('.tab').forEach(tab => tab.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+
+            const selectedTab = document.querySelector(`.tab[data-tab="${tabName}"]`);
+            if (selectedTab) selectedTab.classList.add('active');
+            const selectedContent = document.getElementById(tabName);
+            if (selectedContent) selectedContent.classList.add('active');
+
+            if (shouldRender) {
+                if (tabName === 'partite') {
+                    renderPartiteTable();
+                } else if (tabName === 'giocate') {
+                    renderGiocateForm();
+                } else if (tabName === 'bilancio') {
+                    renderBilancio();
+                } else if (tabName === 'capitale') {
+                    document.getElementById('saldoIniziale').value = appData.riepilogo.cassa_iniziale;
+                    renderCapitale();
+                }
+            }
+        }
+
+        function showMessage(elementId, message, type) {
+            const element = document.getElementById(elementId);
+            const msgDiv = document.createElement('div');
+            msgDiv.className = `message ${type}`;
+            msgDiv.textContent = message;
+            
+            if (elementId === 'globalMessage') {
+                document.getElementById('globalMessage').innerHTML = '';
+                document.getElementById('globalMessage').appendChild(msgDiv);
+                setTimeout(() => {
+                    msgDiv.remove();
+                }, 5000);
+            } else {
+                element.insertBefore(msgDiv, element.firstChild);
+                setTimeout(() => {
+                    msgDiv.remove();
+                }, 5000);
+            }
+        }
+
+        function handleFileUpload(event) {
+            const file = event.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    const rawData = e.target.result;
+                    const isCSV = file.name.endsWith('.csv');
+                    
+                    if (!isCSV) {
+                        document.getElementById('jsonInput').value = rawData;
+                        showMessage('importMessage', `File JSON caricato. Clicca su "Importa Dati JSON" per processare.`, 'success');
+                    } else {
+                         const output = processImportData(rawData, true);
+                         handleImportOutput(output);
+                    }
+                };
+                reader.readAsText(file);
+            }
+        }
+        
+        function importData(isJson) {
+            const rawData = document.getElementById('jsonInput').value.trim();
+            if (!rawData) {
+                 showMessage('importMessage', `Per favore, incolla i dati ${isJson ? 'JSON' : 'CSV'} nel box o carica un file.`, 'error');
+                return;
+            }
+            
+            const output = processImportData(rawData, !isJson);
+            handleImportOutput(output);
+        }
+        
+        function createManualPartita() {
+            const manualForm = document.getElementById('manualInputForm');
+            const data = {};
+            
+            manualForm.querySelectorAll('input, select').forEach(input => {
+                const field = input.getAttribute('data-manual-field');
+                if (field) {
+                    data[field] = input.value;
+                }
+            });
+
+            const validationResult = validatePartita(data, false);
+            
+            if (!validationResult.valid) {
+                showMessage('importMessage', `Errore di validazione: la partita manuale non può essere creata. Controlla la console.`, 'error');
+                console.error("Errore Creazione Partita Manuale:", validationResult.errors);
+                return;
+            }
+            
+            const newPartita = validationResult.partita;
+            appData.partite.unshift(newPartita);
+            sortPartite();
+            window.saveAppData ? window.saveAppData() : window.renderApp();
+            switchTab('partite');
+            showMessage('partiteMessage', `Partita "${newPartita.nome_partita}" creata manualmente e aggiunta.`, 'success');
+        }
+
+        function sortPartite() {
+            appData.partite.sort((a, b) => {
+                const dateA = new Date(a.data + ' ' + a.orario);
+                const dateB = new Date(b.data + ' ' + b.orario);
+                return dateA - dateB;
+            });
+        }
+        
+        function eliminaPartita(index) {
+            const partita = appData.partite[index];
+            
+            const modal = document.getElementById('confirmModal');
+            const modalMessage = document.getElementById('modalMessage');
+            const modalConfirm = document.getElementById('modalConfirm');
+            const modalCancel = document.getElementById('modalCancel');
+            
+            modalMessage.innerHTML = `Vuoi eliminare la partita:<br><strong>${partita.nome_partita}</strong>?`;
+            modal.classList.add('active');
+            
+            const newConfirm = modalConfirm.cloneNode(true);
+            const newCancel = modalCancel.cloneNode(true);
+            modalConfirm.parentNode.replaceChild(newConfirm, modalConfirm);
+            modalCancel.parentNode.replaceChild(newCancel, modalCancel);
+            
+            newConfirm.addEventListener('click', () => {
+                const nomePartita = partita.nome_partita;
+                appData.partite.splice(index, 1);
+                appData.giocate = appData.giocate.filter(g => g.originalIndex !== index);
+                
+                modal.classList.remove('active');
+                renderPartiteTable();
+                showMessage('partiteMessage', `✓ Partita "${nomePartita}" ELIMINATA con successo`, 'success');
+                
+                if (window.saveAppData) {
+                    window.saveAppData();
+                }
+            });
+            
+            newCancel.addEventListener('click', () => {
+                modal.classList.remove('active');
+                showMessage('partiteMessage', 'Operazione annullata', 'warning');
+            });
+            
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) {
+                    modal.classList.remove('active');
+                    showMessage('partiteMessage', 'Operazione annullata', 'warning');
+                }
+            });
+        }
+
+        function giocaPartita(index) {
+            const partita = appData.partite[index];
+            
+            const nuovaGiocata = {
+                ...partita,
+                originalIndex: index,
+                stake: partita.stake || 30,
+                quota: 0,
+                esito: 0,
+                esitoManuale: 'In Attesa',
+                stato: 'attiva'
+            };
+            
+            appData.giocate.push(nuovaGiocata);
+            window.saveAppData ? window.saveAppData() : renderGiocateForm();
+            switchTab('giocate');
+            showMessage('giocateMessage', `Partita "${partita.nome_partita}" aggiunta alle giocate attive.`, 'success');
+        }
+
+        function renderPartiteTable() {
+            const container = document.getElementById('partiteTable');
+            
+            if (appData.partite.length === 0) {
+                container.innerHTML = '<div class="empty-state"><h3>Nessuna partita disponibile</h3><p>Importa i dati dal tab IMPORT o usa la sezione "Aggiungi Partita Manuale"</p></div>';
+                return;
+            }
+
+            const partiteToShow = appData.partite.slice(0, visiblePartite);
+
+            let html = '<div id="partiteScroll" style="max-height: 600px; overflow-y: auto;"><table style="width: 100%;"><thead><tr>'; 
+            html += '<th>CAMPIONATO</th>';
+            html += '<th>NOME PARTITA</th>';
+            html += '<th>DATA</th>';
+            html += '<th>ORARIO</th>';
+            html += '<th>MERCATO</th>';
+            html += '<th>PROB.</th>';
+            html += '<th>SEM.</th>';
+            html += '<th>ENTRY</th>';
+            html += '<th>EXIT</th>';
+            html += '<th>STOP</th>';
+            html += '<th>TIME</th>';
+            html += '<th>AZIONI</th>';
+            html += '</tr></thead><tbody>';
+
+            partiteToShow.forEach((partita, index) => {
+                let semaforoClass = getSemaforoClass(partita.probabilita);
+                const semaforoHtml = `<span class="semaforo-dot ${semaforoClass}"></span>`;
+
+                html += `<tr data-index="${index}">`;
+                html += `<td>${partita.campionato || 'N/A'}</td>`;
+                html += `<td style="font-weight: 600;">${partita.nome_partita || 'N/A'}</td>`;
+                html += `<td>${formatDate(partita.data) || 'N/A'}</td>`;
+                html += `<td>${partita.orario || 'N/A'}</td>`;
+                html += `<td>${partita.mercato || 'N/A'}</td>`;
+                html += `<td>${partita.probabilita || 'N/A'}%</td>`;
+                html += `<td style="text-align: center;">${semaforoHtml}</td>`;
+                html += `<td>${partita.entry?.toFixed(2) || 'N/A'}</td>`;
+                html += `<td>${partita.exit?.toFixed(2) || 'N/A'}</td>`;
+                html += `<td>${partita.stop_loss?.toFixed(2) || 'N/A'}</td>`;
+                html += `<td>${partita.stop_time || 'N/A'}</td>`;
+                html += `<td><div class="actions" style="justify-content: flex-start;">`;
+                html += `<button class="success gioca-btn">Gioca</button>`;
+                html += `<button class="danger elimina-partite-btn" title="Elimina">🗑️</button>`; 
+                html += `</div></td>`;
+                html += '</tr>';
+            });
+
+            html += '</tbody></table></div>';
+            
+            if (visiblePartite < appData.partite.length) {
+                html += `<p style="text-align: center; margin-top: 10px; color: #636366;">Visualizzate ${visiblePartite} di ${appData.partite.length} partite. Scorri per vederne altre.</p>`;
+            }
+
+            container.innerHTML = html;
+            
+            // Aggiungi listener per scroll infinito
+            const scrollDiv = document.getElementById('partiteScroll');
+            if (scrollDiv) {
+                scrollDiv.addEventListener('scroll', function() {
+                    if (scrollDiv.scrollTop + scrollDiv.clientHeight >= scrollDiv.scrollHeight - 50) {
+                        if (visiblePartite < appData.partite.length) {
+                            visiblePartite += 20;
+                            renderPartiteTable();
+                        }
+                    }
+                });
+            }
+        }
+
+        function changePage(direction) {
+            // Funzione rimossa - non più necessaria
+        }
+
+        function renderGiocateForm() {
+            const container = document.getElementById('giocateForm');
+            
+            if (appData.giocate.length === 0) {
+                container.innerHTML = '<div class="empty-state"><h3>Nessuna giocata attiva</h3><p>Seleziona una partita dal tab PARTITE e clicca "Gioca"</p></div>';
+                return;
+            }
+
+            let totalStake = 0;
+            let sommaEsitiPositivi = 0;
+
+            let html = '<div style="max-height: 600px; overflow-y: auto;"><table style="width: 100%;"><thead><tr>';
+            html += '<th>CAMPIONATO</th><th>NOME PARTITA</th><th>MERCATO</th>';
+            html += '<th>STAKE</th><th>QUOTA</th><th>ESITO</th><th>RISULTATO (€)</th><th>AZIONI</th>';
+            html += '</tr></thead><tbody>';
+
+            appData.giocate.forEach((giocata, index) => {
+                totalStake += parseFloat(giocata.stake) || 0;
+                if (giocata.esito > 0) {
+                    sommaEsitiPositivi += giocata.esito;
+                }
+
+                html += `<tr data-index="${index}">`;
+                html += `<td>${giocata.campionato || 'N/A'}</td>`;
+                html += `<td style="font-weight: 600;">${giocata.nome_partita}</td>`;
+                html += `<td>${giocata.mercato}</td>`;
+                html += `<td><input type="number" class="stake-input" value="${giocata.stake}" step="0.01" style="width: 80px;"></td>`;
+                html += `<td><input type="number" class="quota-input" value="${giocata.quota}" step="0.01" style="width: 80px;"></td>`;
+                html += `<td><select class="esito-input"><option value="In Attesa" ${giocata.esitoManuale === 'In Attesa' ? 'selected' : ''}>In Attesa</option><option value="Vinta" ${giocata.esitoManuale === 'Vinta' ? 'selected' : ''}>Vinta</option><option value="Persa" ${giocata.esitoManuale === 'Persa' ? 'selected' : ''}>Persa</option></select></td>`;
+                html += `<td style="font-weight: 600; color: ${giocata.esito >= 0 ? '#34c759' : '#ff3b30'};">${giocata.esito.toFixed(2)} €</td>`;
+                html += `<td><button class="danger rimuovi-giocata-btn" title="Rimuovi">🗑️</button></td>`;
+                html += '</tr>';
+            });
+
+            html += '</tbody></table></div>';
+            html += `<div style="margin-top: 20px;"><strong style="color: #007AFF;">Totale Stake: ${totalStake.toFixed(2)} €</strong> | <strong style="color: #34c759;">Esiti Positivi: +${sommaEsitiPositivi.toFixed(2)} €</strong></div>`;
+            html += '<button id="archiviaBtn" class="secondary" style="margin-top: 20px;">Archivia Giocate Completate</button>';
+            
+            container.innerHTML = html;
+        }
+
+        function updateStake(index, value) {
+            appData.giocate[index].stake = parseFloat(value) || 0;
+            calcolaEsito(index);
+            renderGiocateForm();
+        }
+
+        function updateQuota(index, value) {
+            appData.giocate[index].quota = parseFloat(value) || 0;
+            calcolaEsito(index);
+            renderGiocateForm();
+        }
+
+        function updateEsitoManuale(index, value) {
+            appData.giocate[index].esitoManuale = value;
+            calcolaEsito(index);
+            window.saveAppData ? window.saveAppData() : renderGiocateForm();
+        }
+
+        function calcolaEsito(index) {
+            const giocata = appData.giocate[index];
+            const stake = parseFloat(giocata.stake) || 0;
+            const quota = parseFloat(giocata.quota) || 0;
+
+            if (giocata.esitoManuale === 'Vinta') {
+                giocata.esito = stake * (quota - 1);
+            } else if (giocata.esitoManuale === 'Persa') {
+                giocata.esito = -stake;
+            } else {
+                giocata.esito = 0;
+            }
+        }
+
+        function rimuoviGiocata(index) {
+            const giocata = appData.giocate[index];
+            
+            const modal = document.getElementById('confirmModal');
+            const modalMessage = document.getElementById('modalMessage');
+            const modalConfirm = document.getElementById('modalConfirm');
+            const modalCancel = document.getElementById('modalCancel');
+            
+            modalMessage.innerHTML = `Vuoi rimuovere la giocata:<br><strong>${giocata.nome_partita}</strong>?`;
+            modal.classList.add('active');
+            
+            const newConfirm = modalConfirm.cloneNode(true);
+            const newCancel = modalCancel.cloneNode(true);
+            modalConfirm.parentNode.replaceChild(newConfirm, modalConfirm);
+            modalCancel.parentNode.replaceChild(newCancel, modalCancel);
+            
+            newConfirm.addEventListener('click', () => {
+                const nomeGiocata = giocata.nome_partita;
+                appData.giocate.splice(index, 1);
+                
+                modal.classList.remove('active');
+                renderGiocateForm();
+                showMessage('giocateMessage', `✓ Giocata "${nomeGiocata}" RIMOSSA con successo`, 'success');
+                
+                if (window.saveAppData) {
+                    window.saveAppData();
+                }
+            });
+            
+            newCancel.addEventListener('click', () => {
+                modal.classList.remove('active');
+                showMessage('giocateMessage', 'Operazione annullata', 'warning');
+            });
+            
+            modal.addEventListener('click', (e) => {
+                if (e.target === modal) {
+                    modal.classList.remove('active');
+                    showMessage('giocateMessage', 'Operazione annullata', 'warning');
+                }
+            });
+        }
+
+        function archiviaGiocate() {
+            const giocateCompletate = appData.giocate.filter(g => g.esitoManuale !== 'In Attesa');
+            
+            if (giocateCompletate.length === 0) {
+                showMessage('giocateMessage', 'Nessuna giocata completata da archiviare.', 'warning');
+                return;
+            }
+
+            giocateCompletate.forEach(g => {
+                appData.storico.push({
+                    ...g,
+                    data_archiviazione: new Date().toISOString()
+                });
+                
+                const movimento = {
+                    tipo: 'bet',
+                    importo: g.esito,
+                    descrizione: `${g.esitoManuale === 'Vinta' ? 'Vincita' : 'Perdita'}: ${g.nome_partita}`,
+                    data: new Date().toISOString(),
+                    partita: g.nome_partita
+                };
+                appData.movimentiCapitale.push(movimento);
+            });
+
+            appData.riepilogo.saldo += giocateCompletate.reduce((acc, g) => acc + g.esito, 0);
+            appData.giocate = appData.giocate.filter(g => g.esitoManuale === 'In Attesa');
+            
+            window.saveAppData ? window.saveAppData() : renderGiocateForm();
+            showMessage('giocateMessage', `${giocateCompletate.length} giocate archiviate.`, 'success');
+        }
+
+        function renderBilancio() {
+            const container = document.getElementById('bilancioContent');
+            
+            let totaleScommesse = appData.storico.length;
+            let totaleVinto = 0;
+            let totalePerso = 0;
+            let totaleStake = 0;
+            let vittorie = 0;
+            
+            appData.storico.forEach(s => {
+                totaleStake += parseFloat(s.stake) || 0;
+                if (s.esito > 0) {
+                    totaleVinto += s.esito;
+                    vittorie++;
+                } else if (s.esito < 0) {
+                    totalePerso += Math.abs(s.esito);
+                }
+            });
+            
+            const esitoNetto = totaleVinto - totalePerso;
+            const winRate = totaleScommesse > 0 ? ((vittorie / totaleScommesse) * 100).toFixed(1) : 0;
+            const roi = totaleStake > 0 ? ((esitoNetto / totaleStake) * 100).toFixed(1) : 0;
+            
+            let html = '<div class="bilancio-riepilogo">';
+            html += `<h3>💰 Saldo Contabile Attuale: <span style="color: #34c759;">${appData.riepilogo.saldo.toFixed(2)} €</span></h3>`;
+            html += `<p style="margin-top: 10px; font-size: 14px;">Totale Partite Archiviate nel Periodo: ${totaleScommesse}</p>`;
+            html += '</div>';
+
+            if (appData.storico.length > 0) {
+                html += '<h3 style="margin-top: 30px;">🎯 Storico Partite Filtrato</h3>';
+                html += '<div style="max-height: 600px; overflow-y: auto;"><table style="width: 100%;"><thead><tr>';
+                html += '<th>#</th><th>DATA ORA</th><th>PARTITA</th><th>MERCATO</th><th>QUOTA</th><th>STAKE (€)</th><th>ESITO (€)</th><th>SALDO</th>';
+                html += '</tr></thead><tbody>';
+
+                let saldoProgressivo = appData.riepilogo.cassa_iniziale;
+                appData.storico.forEach((s, idx) => {
+                    saldoProgressivo += s.esito;
+                    html += '<tr>';
+                    html += `<td>${idx + 1}</td>`;
+                    html += `<td>${formatDateTime(s.data, s.orario)}</td>`;
+                    html += `<td style="font-weight: 600;">${s.nome_partita}</td>`;
+                    html += `<td>${s.mercato}</td>`;
+                    html += `<td>${s.quota?.toFixed(2) || 'N/A'}</td>`;
+                    html += `<td>${s.stake?.toFixed(2) || 'N/A'}</td>`;
+                    html += `<td style="font-weight: 600; color: ${s.esito >= 0 ? '#34c759' : '#ff3b30'};">${s.esito >= 0 ? '+' : ''}${s.esito.toFixed(2)}</td>`;
+                    html += `<td style="font-weight: 600;">${saldoProgressivo.toFixed(2)}</td>`;
+                    html += '</tr>';
+                });
+
+                html += '</tbody></table></div>';
+                
+                html += '<div class="stats-grid" style="margin-top: 30px;">';
+                html += `<div class="stat-card">
+                    <h4 style="color: #636366; font-size: 14px; margin-bottom: 10px;">Totale Scommesse</h4>
+                    <p style="font-size: 32px; font-weight: 600; color: #1d1d1f;">${totaleScommesse}</p>
+                </div>`;
+                
+                html += `<div class="stat-card">
+                    <h4 style="color: #636366; font-size: 14px; margin-bottom: 10px;">Totale Vinto</h4>
+                    <p style="font-size: 32px; font-weight: 600; color: #34c759;">€ ${totaleVinto.toFixed(2)}</p>
+                </div>`;
+                
+                html += `<div class="stat-card">
+                    <h4 style="color: #636366; font-size: 14px; margin-bottom: 10px;">Totale Perso</h4>
+                    <p style="font-size: 32px; font-weight: 600; color: #ff3b30;">€ ${totalePerso.toFixed(2)}</p>
+                </div>`;
+                
+                html += `<div class="stat-card">
+                    <h4 style="color: #636366; font-size: 14px; margin-bottom: 10px;">Esito Netto Periodo</h4>
+                    <p style="font-size: 32px; font-weight: 600; color: ${esitoNetto >= 0 ? '#34c759' : '#ff3b30'};">${esitoNetto >= 0 ? '+' : ''}€ ${esitoNetto.toFixed(2)}</p>
+                </div>`;
+                
+                html += `<div class="stat-card">
+                    <h4 style="color: #636366; font-size: 14px; margin-bottom: 10px;">Win Rate</h4>
+                    <p style="font-size: 32px; font-weight: 600; color: #1d1d1f;">${winRate}%</p>
+                </div>`;
+                
+                html += `<div class="stat-card">
+                    <h4 style="color: #636366; font-size: 14px; margin-bottom: 10px;">ROI</h4>
+                    <p style="font-size: 32px; font-weight: 600; color: ${roi >= 0 ? '#34c759' : '#ff3b30'};">${roi}%</p>
+                </div>`;
+                
+                html += '</div>';
+            } else {
+                html += '<div class="empty-state" style="margin-top: 30px;"><h3>Nessuna partita archiviata</h3><p>Le statistiche appariranno quando archivierai delle giocate</p></div>';
+            }
+
+            container.innerHTML = html;
+        }
+
+        function renderCapitale() {
+            const container = document.getElementById('capitaleContent');
+            
+            if (appData.movimentiCapitale.length === 0) {
+                container.innerHTML = '<div class="empty-state"><h3>Nessun movimento registrato</h3></div>';
+                return;
+            }
+
+            let html = '<h3>Storico Movimenti</h3>';
+            html += '<table><thead><tr>';
+            html += '<th>Data</th><th>Tipo</th><th>Descrizione</th><th>Importo</th>';
+            html += '</tr></thead><tbody>';
+
+            appData.movimentiCapitale.forEach(m => {
+                const rowClass = m.tipo === 'bet' ? (m.importo > 0 ? 'movimento-bet-win' : 'movimento-bet-lose') : '';
+                html += `<tr class="${rowClass}">`;
+                html += `<td>${formatDate(m.data)}</td>`;
+                html += `<td>${m.tipo}</td>`;
+                html += `<td>${m.descrizione}</td>`;
+                html += `<td style="font-weight: 600; color: ${m.importo >= 0 ? '#34c759' : '#ff3b30'};">${m.importo.toFixed(2)} €</td>`;
+                html += '</tr>';
+            });
+
+            html += '</tbody></table>';
+            container.innerHTML = html;
+        }
+
+        function aggiornaSaldoIniziale() {
+            const nuovoSaldo = parseFloat(document.getElementById('saldoIniziale').value) || 0;
+            appData.riepilogo.cassa_iniziale = nuovoSaldo;
+            appData.riepilogo.saldo = nuovoSaldo + appData.movimentiCapitale.reduce((acc, m) => acc + m.importo, 0);
+            window.saveAppData ? window.saveAppData() : renderCapitale();
+        }
+
+        function incrementaCapitale() {
+            const importo = parseFloat(document.getElementById('importoCapitale').value) || 0;
+            if (importo <= 0) {
+                showMessage('globalMessage', 'Inserire un importo valido.', 'error');
+                return;
+            }
+
+            const movimento = {
+                tipo: 'ricarica',
+                importo: importo,
+                descrizione: 'Ricarica capitale',
+                data: new Date().toISOString()
+            };
+
+            appData.movimentiCapitale.push(movimento);
+            appData.riepilogo.saldo += importo;
+            document.getElementById('importoCapitale').value = '';
+            
+            window.saveAppData ? window.saveAppData() : renderCapitale();
+            showMessage('globalMessage', `Capitale ricaricato: +${importo.toFixed(2)} €`, 'success');
+        }
+
+        function svincolaCapitale() {
+            const importo = parseFloat(document.getElementById('importoCapitale').value) || 0;
+            if (importo <= 0) {
+                showMessage('globalMessage', 'Inserire un importo valido.', 'error');
+                return;
+            }
+
+            const movimento = {
+                tipo: 'prelievo',
+                importo: -importo,
+                descrizione: 'Prelievo capitale',
+                data: new Date().toISOString()
+            };
+
+            appData.movimentiCapitale.push(movimento);
+            appData.riepilogo.saldo -= importo;
+            document.getElementById('importoCapitale').value = '';
+            
+            window.saveAppData ? window.saveAppData() : renderCapitale();
+            showMessage('globalMessage', `Capitale prelevato: -${importo.toFixed(2)} €`, 'warning');
+        }
+
+        function filtraBilancio(filtro) {
+            filtroCorrente = filtro;
+            renderBilancio();
+        }
+
+        function filtraBilancioPersonalizzato() {
+            renderBilancio();
+        }
+        
+        function setupEventListeners() {
+            const container = document.querySelector('.container');
+            
+            window.copyToClipboard = function(elementId, type) {
+                const code = document.getElementById(elementId).textContent;
+                const promptTemplate = 'Generami un set di partite nel seguente formato, usando i dati della Serie A 2025/2026. Rispondi solo con l\'array JSON:\n\n';
+                const textToCopy = promptTemplate + code;
+
+                if (navigator.clipboard && navigator.clipboard.writeText) {
+                    navigator.clipboard.writeText(textToCopy).then(() => {
+                        showMessage('importMessage', 'Codice e Prompt copiati negli appunti!', 'success');
+                    }).catch(err => {
+                        showMessage('importMessage', 'Errore durante la copia negli appunti.', 'error');
+                    });
+                }
+            };
+            
+            window.updateManualSemaforo = function() {
+                const probInput = document.getElementById('manual_probabilita');
+                const semaforoDot = document.getElementById('semaforoDot');
+                
+                if (probInput && semaforoDot) {
+                    const probValue = parseFloat(probInput.value);
+                    semaforoDot.className = semaforoDot.className.replace(/semaforo-(green|orange|red)/g, '').trim();
+                    const newClass = getSemaforoClass(probValue);
+                    semaforoDot.classList.add(newClass);
+                }
+            }
+
+            container.addEventListener('click', (event) => {
+                const target = event.target;
+
+                if (target.classList.contains('tab')) {
+                    const tabName = target.getAttribute('data-tab');
+                    if (tabName) switchTab(tabName);
+                }
+                
+                if (target.id === 'copyExampleBtn') {
+                    const format = document.getElementById('formatSelect').value;
+                    copyToClipboard('formatExample', format);
+                    return;
+                }
+
+                if (target.id === 'importJsonBtn') importData(true);
+                if (target.id === 'importCsvBtn') importData(false);
+                if (target.id === 'createPartitaBtn') createManualPartita();
+
+                if (target.classList.contains('gioca-btn')) {
+                    const row = target.closest('tr');
+                    if (row) giocaPartita(parseInt(row.getAttribute('data-index')));
+                }
+                
+                if (target.classList.contains('elimina-partite-btn')) {
+                    const row = target.closest('tr');
+                    if (row) eliminaPartita(parseInt(row.getAttribute('data-index')));
+                }
+                
+                if (target.classList.contains('rimuovi-giocata-btn')) {
+                    const row = target.closest('tr');
+                    if (row) rimuoviGiocata(parseInt(row.getAttribute('data-index')));
+                }
+                
+                if (target.id === 'archiviaBtn') archiviaGiocate();
+                
+                if (target.classList.contains('filtro-btn')) filtraBilancio(target.getAttribute('data-filter'));
+
+                if (target.id === 'incrementaBtn') incrementaCapitale();
+                if (target.id === 'svincolaBtn') svincolaCapitale();
+            });
+
+            container.addEventListener('change', (event) => {
+                const target = event.target;
+                const row = target.closest('tr');
+
+                if (row && target.classList.contains('stake-input')) updateStake(parseInt(row.getAttribute('data-index')), target.value);
+                if (row && target.classList.contains('quota-input')) updateQuota(parseInt(row.getAttribute('data-index')), target.value);
+                if (row && target.classList.contains('esito-input')) updateEsitoManuale(parseInt(row.getAttribute('data-index')), target.value);
+
+                if (target.id === 'fileInput') handleFileUpload(event);
+                if (target.classList.contains('filtro-data')) filtraBilancioPersonalizzato();
+                if (target.id === 'saldoIniziale') aggiornaSaldoIniziale();
+                if (target.id === 'formatSelect') updateFormatExample();
+            });
+            
+            const probInput = document.getElementById('manual_probabilita');
+            if (probInput) {
+                probInput.addEventListener('input', updateManualSemaforo);
+            }
+            
+            updateFormatExample();
+        }
+
+        const SINGLE_EXAMPLE = JSON.stringify({
+            "campionato": "Serie A",
+            "nome_partita": "Verona vs Sassuolo",
+            "data": "2025-10-03",
+            "orario": "20:45",
+            "mercato": "Over 1.5",
+            "probabilita": 80.0,
+            "semaforo": "🟢",
+            "entry": 1.68,
+            "exit": 1.24,
+            "stop_loss": 2.34
+        }, null, 2);
+
+        const MULTIPLE_EXAMPLE = JSON.stringify([
+            {
+                "campionato": "Serie A",
+                "nome_partita": "Verona vs Sassuolo",
+                "data": "2025-10-03",
+                "orario": "20:45",
+                "mercato": "Over 1.5",
+                "probabilita": 80.0,
+                "semaforo": "🟢",
+                "entry": 1.68,
+                "exit": 1.24,
+                "stop_loss": 2.34
+            },
+            {
+                "campionato": "Serie A",
+                "nome_partita": "Lazio vs Torino",
+                "data": "2025-10-04",
+                "orario": "15:00",
+                "mercato": "Over 1.5",
+                "probabilita": 60.0,
+                "semaforo": "🟠",
+                "entry": 1.88,
+                "exit": 1.30,
+                "stop_loss": 2.55
+            }
+        ], null, 2);
+
+        function updateFormatExample() {
+            const select = document.getElementById('formatSelect');
+            const pre = document.getElementById('formatExample');
+            pre.textContent = select.value === 'single' ? SINGLE_EXAMPLE : MULTIPLE_EXAMPLE;
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            setupEventListeners();
+            if (!window.isAuthReady) {
+                window.renderApp();
+            }
+        });
+    </script>
+</body>
+</html>
